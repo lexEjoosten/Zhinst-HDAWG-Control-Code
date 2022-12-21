@@ -1,5 +1,5 @@
 from blacs.tab_base_classes import Worker
-import HDAWG_funcs as fn
+import labscript_devices.HDAWG.HDAWG_funcs as fn
 
 class HDAWGworker(Worker):
     def init(self):
@@ -44,7 +44,7 @@ class HDAWGworker(Worker):
 
 
         exp_setting = [
-            [f"/{self.device_id}/sigouts/*/on", 1], # turn on the outputs
+            [f"/{self.device_id}/sigouts/*/on", 1], # turn on the outputs   x
             [f"/{self.device_id}/sigouts/*/range", 1], #set the maximum voltage to 1Vpp
             [f"/{self.device_id}/awgs/0/outputs/*/amplitude", 1], #set the amplitude to 1, (this means that a value of 1 in sequencer corresponds to 0.5V on the output, as this is 1 Vpp for a sine function)
             [f"/{self.device_id}/awgs/0/time", 0], 
@@ -66,7 +66,7 @@ class HDAWGworker(Worker):
         self.daq.sync()
         
 
-    def program_ks(self):
+    def program_AWG(self):
         with h5py.File(self.h5_file, 'r') as hdf5_file:
             group = hdf5_file['/devices/'+self.device_name]
             # read out the dimension of the matrix
@@ -87,7 +87,7 @@ class HDAWGworker(Worker):
             ### we need better input control
             ### how is it saved to h5 file?
             self.PlaySequence(pulse_program.reshape(np.shape(pulse_program)[1], 7))
-            
+
     def program_manual(self):
         return None
     
@@ -99,7 +99,7 @@ class HDAWGworker(Worker):
             # if there is no data assigned to iq_modulator: do nothing
             if 'IQLoad' in list(group.keys()):        
                 # start the programming 0.1s into the experiment
-                thread = threading.Timer(0.1, self.program_ks)
+                thread = threading.Timer(0.1, self.program_AWG)
                 thread.start()
             else:
                 self.IQModulatorOutputOff()
@@ -108,6 +108,8 @@ class HDAWGworker(Worker):
         return initial_values
 
     def abort_buffered(self):
+        seq=fn.Sequence(While=False)
+        seq.Upload()
         return self.transition_to_manual(True)
             
     def transition_to_manual(self, abort = False):    
@@ -136,30 +138,40 @@ class HDAWGworker(Worker):
         P2=0
 
         for P in Pulses:
+            
+            
+            pulse_dict['ks_frequency1'] = P[0]
+            pulse_dict = P[1]
+            pulse_dict['ks_amplitude1'] = P[2]
+            pulse_dict['ks_amplitude2'] = P[3] 
+            pulse_dict['ks_phase1'] = P[4]
+            pulse_dict['ks_phase2'] = P[5]
+            pulse_dict['dt'] = P[6]
+            
             t=0
-            dt=P["dt"]
+            dt=pulse_dict["dt"]
             if dt==None or dt==0:
                 raise(Exception("Pulses need to have non-zero duration"))
-            AUX=[P["aux1"],P["aux2"],P["aux3"],P["aux4"]]
-            for m in range(AUX):
-                if AUX[m]!=None:
-                    Mark[m]=AUX[m]
+            #AUX=[pulse_dict["aux1"],pulse_dict["aux2"],pulse_dict["aux3"],pulse_dict["aux4"]]
+            #for m in range(AUX):
+            #    if AUX[m]!=None:
+            #        Mark[m]=AUX[m]
             
 
-            if P["ks_amplitude1"]!=None:
-                A1=P["ks_amplitude1"]
-            if P["ks_amplitude2"]!=None:
-                A2=P["ks_amplitude2"]
+            if pulse_dict["ks_amplitude1"]!=None:
+                A1=pulse_dict["ks_amplitude1"]
+            if pulse_dict["ks_amplitude2"]!=None:
+                A2=pulse_dict["ks_amplitude2"]
 
-            if P["ks_frequency1"]!=None:
-                F1=P["ks_frequency1"]
-            if P["ks_frequency2"]!=None:
-                F2=P["ks_frequency2"]
+            if pulse_dict["ks_frequency1"]!=None:
+                F1=pulse_dict["ks_frequency1"]
+            if pulse_dict["ks_frequency2"]!=None:
+                F2=pulse_dict["ks_frequency2"]
 
-            if P["ks_phase1"]!=None:
-                P1=P["ks_phase1"]
-            if P["ks_phase2"]!=None:
-                P2=P["ks_phase2"]
+            if pulse_dict["ks_phase1"]!=None:
+                P1=pulse_dict["ks_phase1"]
+            if pulse_dict["ks_phase2"]!=None:
+                P2=pulse_dict["ks_phase2"]
 
             if A1!=0 and A2!=0:
                 phase11=P1
