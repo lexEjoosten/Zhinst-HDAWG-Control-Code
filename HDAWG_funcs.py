@@ -2,7 +2,6 @@ from time import sleep
 from math import ceil
 from os import path
 import numpy as np
-from zhinst.toolkit import Session, CommandTable, Waveforms
 import textwrap
 import operator
 
@@ -86,7 +85,13 @@ def findfreq(freq,Ecc,loopmax,factor):
     return WN1,LEN1,freqout
 
 
-
+def HDAWGcalibration(amp1=0.5,amp2=0.5,freq=20e6,phase1=0,phase2=np.pi/2):
+        damp,dphase=0,0
+        if amp2==amp1:
+            damp=amp1*amp1*0.0021+0.0044*amp1+0.0003
+        if phase2==phase1+np.pi/2 or phase2==phase1-np.pi/2:
+            dphase=-freq*1e-6*0.0008+0.0006
+        return damp,dphase
 
 class Sequence():
     #this class defines and builds the sequences which are loaded onto the HDAWG.
@@ -106,7 +111,10 @@ class Sequence():
         else:
             self.While=True
         #defines which channel should trigger the sequence.
-        self.seq = self.seq.replace("DTR", str(Trigchan)) 
+        if Trigchan==False:
+            self.seq.replace("DTR", str(Trigchan)) 
+
+        self.seq = self.seq.replace("waitDigTrigger(DTR);", "") 
         #defines various values related to the desired frequency accuracy of the HDAWG output.
         self.Ecc = Ecc
         self.lm  = loopmax
@@ -146,12 +154,16 @@ class Sequence():
         )
         if self.While==True:
             self.seq +="}"
+
+    
+
     
     def addsingletone( #This function produces a single-tone two-channel signal.
         self,
         dur:float       = 0.001,
         freq:float      = 1e6,
         amp:float       = 1.0,
+        amp2:float      = None,
         phase1:float    = None,
         phase2:float    = None,
         Mark:list       = [0,0,0,0],#if and where a marker is desired
@@ -159,18 +171,29 @@ class Sequence():
         CHAN1:int       = 1, #1st Output channel
         CHAN2:int       = 2  #2nd Output channel
     ):
+        Flag1,Flag2=False,False
+        if amp2==None:
+            amp2=amp
+            Flag1=True
+
         #automatically assigns phasetime if it is left undefined
         if phasetime==None:
             phasetime=self.t
+            Flag2=True
         self.t+=dur
 
         #default phases of channel 1 and 2 are sine and cosine.
         if phase1==None:
             phase1=0
         if phase2==None:
-            phase2=phase1+np.pi/2
+            phase2=phase1-np.pi/2
 
-
+        damp,dphase=HDAWGcalibration(amp,amp2,freq,phase1,phase2)
+        if Flag1:
+            amp2+=damp
+        if Flag2:
+            phase2+=dphase
+        
         #For various calcs, need the following constants.
         per=freq*dur
         factor=max(int(np.log2(2.4e9/(self.acc*freq))),0)
@@ -199,6 +222,16 @@ class Sequence():
             per=per-1
             LEN2=N-LEN1*per
         per2=freqout*LEN2/24e8*2**factor
+        
+        #Makes sure the final waveform is long enough
+        if round(LEN2,5)<100 and per>0:
+            per-=1
+            LEN2+=LEN1
+            per2+=WN1
+
+
+
+
 
         #Starting the awg_program for this section depending on whether there should be a repeating section:
         if per==0:
@@ -222,8 +255,8 @@ class Sequence():
 
         #in order to have arbitrary-channel outputs, the following code makes sure that the outputs: OUT1 & OUT2 end up in the correct spots
 
-        OUT1="+AMP*sine(LEN1, P1, WN1)"
-        OUT2="+AMP*sine(LEN1, P2, WN1)"
+        OUT1="+AMP1*sine(LEN1, P1, WN1)"
+        OUT2="+AMP2*sine(LEN1, P2, WN1)"
 
         
         
@@ -250,8 +283,8 @@ class Sequence():
         
 
         awg_program=awg_program.replace("WAFE","WAVE")
-        OUT1="+AMP*sine(LEN2, P1,WN2)"
-        OUT2="+AMP*sine(LEN2, P2,WN2)"
+        OUT1="+AMP1*sine(LEN2, P1,WN2)"
+        OUT2="+AMP2*sine(LEN2, P2,WN2)"
 
         if CHAN1==1:
             awg_program=awg_program.replace("WAVE1","WAVE1"+OUT1)
@@ -287,8 +320,12 @@ class Sequence():
                 awg_program=awg_program.replace(str(i+1)+",marker(LEN2,1)+",str(i+1)+",")
 
 
+
+
         #inserts the correct values for the variable placeholders
         awg_program = awg_program.replace("FACT", str(factor))
+        awg_program = awg_program.replace("AMP1", str(amp))
+        awg_program = awg_program.replace("AMP2", str(amp2))
         awg_program = awg_program.replace("P1", str(phase1))
         awg_program = awg_program.replace("P2", str(phase2))
         awg_program = awg_program.replace("PER", str(per))
@@ -296,7 +333,6 @@ class Sequence():
         awg_program = awg_program.replace("WN2", str(per2))
         awg_program = awg_program.replace("LEN1", str(round(LEN1,5))) #additional rounding is included to mitigate python's floating point weirdness.
         awg_program = awg_program.replace("LEN2", str(round(LEN2,5))) #additional rounding is included to mitigate python's floating point weirdness.
-        awg_program = awg_program.replace("AMP", str(amp))
         
         #if the singletone is nested inside of a while loop
         if self.While==True: 
@@ -316,6 +352,7 @@ class Sequence():
         dur:float       = 0.001,
         freq:float      = 1e6,
         amp:float       = 1.0,
+        amp2:float      = None,
         phase1:float    = None,
         phase2:float    = None,
         IRfreq:float    = None, #frequency of channel 3 output
@@ -324,6 +361,11 @@ class Sequence():
         Mark:list       = [0,0,0,0],#if and where a marker is desired
         phasetime:float = None, #Time evolution of the phase, this time*freq_real is added onto phase1 and phase2.
     ):
+        Flag1,Flag2=False,False
+    
+        if amp2==None:
+            amp2=amp
+            Flag1=True
         #automatically assigns phasetime if it is left undefined
         if phasetime==None:
             phasetime=self.t
@@ -353,7 +395,14 @@ class Sequence():
         if phase1==None:
             phase1=0
         if phase2==None:
-            phase2=phase1+np.pi/2
+            phase2=phase1-np.pi/2
+            Flag2=True
+        
+        damp,dphase=HDAWGcalibration(amp,amp2,freq,phase1,phase2)
+        if Flag1:
+            amp2+=damp
+        if Flag2:
+            phase2+=dphase
 
 
         #For various calcs, need the following factors.
@@ -386,6 +435,12 @@ class Sequence():
             LEN2=N-LEN1*per
         per2=freqout*LEN2/24e8*2**factor
 
+        #Makes sure the final waveform is long enough
+        if round(LEN2,5)<100 and per>0:
+            per-=1
+            LEN2+=LEN1
+            per2+=WN1
+
         #Starting the awg_program for this section depending on whether there should be a repeating section:
         if per==0:
             awg_program += textwrap.dedent(
@@ -413,14 +468,14 @@ class Sequence():
                 awg_program=awg_program.replace(str(i+1)+",marker(LEN2,1)+",str(i+1)+",")
         
         #The following code replaces the placeholders with the correct waveforms
-        OUT1="AMP*sine(LEN1, P1, WN1)"
-        OUT2="AMP*sine(LEN1, P2, WN1)"
+        OUT1="AMP1*sine(LEN1, P1, WN1)"
+        OUT2="AMP2*sine(LEN1, P2, WN1)"
         IROUTI="rect(LEN1,IRAMP)"
         awg_program=awg_program.replace("OUT1",OUT1)
         awg_program=awg_program.replace("OUT2",OUT2)
         awg_program=awg_program.replace("IROUTI",IROUTI)
-        OUTP1="AMP*sine(LEN2, P1,WN2)"
-        OUTP2="AMP*sine(LEN2, P2,WN2)"
+        OUTP1="AMP1*sine(LEN2, P1,WN2)"
+        OUTP2="AMP2*sine(LEN2, P2,WN2)"
         IROUTP="rect(LEN2,IRAMP)"
         awg_program=awg_program.replace("OUTP1",OUTP1)
         awg_program=awg_program.replace("OUTP2",OUTP2)
@@ -429,6 +484,8 @@ class Sequence():
         #inserts the correct values for the variable placeholders
         awg_program=awg_program.replace("IRAMP",str(IRamp))
         awg_program = awg_program.replace("FACT", str(factor))
+        awg_program = awg_program.replace("AMP1", str(amp))
+        awg_program = awg_program.replace("AMP2", str(amp2))
         awg_program = awg_program.replace("P1", str(phase1))
         awg_program = awg_program.replace("P2", str(phase2))
         awg_program = awg_program.replace("PER", str(per))
@@ -436,7 +493,6 @@ class Sequence():
         awg_program = awg_program.replace("WN2", str(per2))
         awg_program = awg_program.replace("LEN1", str(round(LEN1,5)))
         awg_program = awg_program.replace("LEN2", str(round(LEN2,5)))
-        awg_program = awg_program.replace("AMP", str(amp))
 
         
         if self.While==True:#if the singletone is nested inside of a while loop
@@ -446,11 +502,32 @@ class Sequence():
         if self.While==True:
             self.seq +="}"
         
-    def modulatorsingletone(self,tdur=1e-3,freq=None,phase=None,amp=1,Mark=[0,0,0,0]):
+    def modulatorsingletone(self,tdur=1e-3,freq=None,phase1=None,phase2=None,amp=1,amp2=None,Mark=[0,0,0,0]):
         #Writes code into the sequencer for a digital modulator based two-channel single-tone.
         #The code assumes that the digital modulators have been enabled.
         #No method for turning these on/off within the sequencer has been found yet.
 
+        Flag1,Flag2=False,False
+
+        #add method for channel dependant amplitudes
+        if amp2==None:
+            amp2=amp
+            Flag1=True
+
+        k=False
+        if phase1==None:
+            phase1=0
+            k=True
+        if phase2==None:
+            phase2=phase1-np.pi/2
+            Flag2=True
+            k=True
+        
+        damp,dphase=HDAWGcalibration(amp,amp2,freq,phase1,phase2)
+        if Flag1:
+            amp2+=damp
+        if Flag2:
+            phase2+=dphase
 
         #initial values helpful with further calculations
         per=int(tdur*24e8/240)-1
@@ -474,27 +551,28 @@ class Sequence():
             resetOscPhase();""" %str(freq)
 
             )
+        
         #If the phase is changed, change it accordingly.
-        if phase!=None:
+        if k:
             awg_program+=textwrap.dedent("""
             setInt("sines/2/phaseshift",P1);
-            setInt("sines/3/phaseshift",P1+90);
-            resetOscPhase();""".replace("P1",str(phase*180/np.pi))
+            setInt("sines/3/phaseshift",P2);
+            resetOscPhase();""".replace("P1",str(phase1*180/np.pi)).replace("P2",str(phase2*180/np.pi))
             )
 
         if per>0:#adds the code to produce the rectangular pulse needed for digital modulation, with a check to reduce redundant code
             awg_program += textwrap.dedent(
                 """
                     repeat(PER){
-                        playWave(1,marker(LEN1,1)+AMP*ones(LEN1),2,marker(LEN1,1)+AMP*ones(LEN1),3,marker(LEN1,1),4,marker(LEN1,1),0);
+                        playWave(1,marker(LEN1,1)+AMP1*ones(LEN1),2,marker(LEN1,1)+AMP2*ones(LEN1),3,marker(LEN1,1),4,marker(LEN1,1),0);
                     }
-                    playWave(1,marker(LEN2,1)+AMP*ones(LEN2),2,marker(LEN2,1)+AMP*ones(LEN2),3,marker(LEN2,1),4,marker(LEN2,1));
+                    playWave(1,marker(LEN2,1)+AMP1*ones(LEN2),2,marker(LEN2,1)+AMP2*ones(LEN2),3,marker(LEN2,1),4,marker(LEN2,1));
                 """
             )
         else:
             awg_program += textwrap.dedent(
                 """
-                    playWave(1,marker(LEN2,1)+AMP*ones(LEN2),2,marker(LEN2,1)+AMP*ones(LEN2),3,marker(LEN2,1),4,marker(LEN2,1));
+                    playWave(1,marker(LEN2,1)+AMP1*ones(LEN2),2,marker(LEN2,1)+AMP2*ones(LEN2),3,marker(LEN2,1),4,marker(LEN2,1));
 
                 """
             )
@@ -511,7 +589,8 @@ class Sequence():
         awg_program = awg_program.replace("PER", str(per))
         awg_program = awg_program.replace("LEN1", str(round(LEN1,5)))
         awg_program = awg_program.replace("LEN2", str(round(LEN2,5)))
-        awg_program = awg_program.replace("AMP", str(amp))
+        awg_program = awg_program.replace("AMP1", str(amp))
+        awg_program = awg_program.replace("AMP2", str(amp2))
 
         #if the singletone is nested inside of a while loop
         if self.While==True:
@@ -526,13 +605,15 @@ class Sequence():
         self,#sequence to append
         dur:float = 0.0001, #duration
         freq1:float = 1e7, #frequency 1st tone
-        amp1:float = 0.5, #amplitude 1st tone
+        amp11:float = 0.5, #amplitude 1st tone
+        amp12:float = None, #amplitude 1st tone
         freq2:float = 3e6, #frequency 2nd tone
-        amp2:float = 0.5, #amplitude 2nd tone
-        phase11:float=0, #phase 1st tone 1st channel
-        phase12:float=np.pi/2, #phase 1st tone 2st channel
-        phase21:float=0, #phase 2st tone 1st channel
-        phase22:float=np.pi/2, #phase 2st tone 2st channel
+        amp21:float = 0.5, #amplitude 2nd tone
+        amp22:float = None, #amplitude 2nd tone
+        phase11:float=None, #phase 1st tone 1st channel
+        phase12:float=None, #phase 1st tone 2st channel
+        phase21:float=None, #phase 2st tone 1st channel
+        phase22:float=None, #phase 2st tone 2st channel
         Mark:list=[0,0,0,0], #if a marker is desired
         phasetime:float = None, #Time evolution of the phase, this time*freq_real is added onto the phases.
         CHAN1:int       = 1, #1st Output channel
@@ -542,6 +623,30 @@ class Sequence():
         if phasetime==None:
             phasetime=self.t
         self.t+=dur
+
+        Flag11,Flag12,Flag21,Flag22=False,False,False,False
+        #default phases of channel 1 and 2 are sine and cosine.        
+        if phase11==None:
+            phase11=0
+        if phase12==None:
+            phase12=phase11-np.pi/2
+            Flag11=True
+        
+        #default phases of channel 1 and 2 are sine and cosine.        
+        if phase21==None:
+            phase21=0
+        if phase22==None:
+            phase22=phase21-np.pi/2
+            Flag12=True
+        
+        #add method for channel dependant amplitudes
+        if amp12==None:
+            amp12=amp11
+            Flag21=True
+        #add method for channel dependant amplitudes
+        if amp22==None:
+            amp22=amp21
+            Flag22=True
 
         #factor by which the sampling rate must be reduced (sampling rate=2.4e9/(2**factor))
         factor=max(int(np.log2(2.4e9/(self.acc*max(freq1,freq2)))),0)
@@ -565,6 +670,17 @@ class Sequence():
         per2=freq2*dur
         N=N=int(round(2.4e9*dur*1/(2**factor),5))
 
+        
+        damp,dphase=HDAWGcalibration(amp11,amp12,freq1,phase11,phase12)
+        if Flag21:
+            amp12+=damp
+        if Flag11:
+            phase12+=dphase
+        damp,dphase=HDAWGcalibration(amp21,amp22,freq2,phase21,phase22)
+        if Flag22:
+            amp22+=damp
+        if Flag12:
+            phase22+=dphase
 
         #define phase in terms of a time t0. (This phasetime needs to be assigned. Sequence.sequence_generator takes care of this automatically, but Sequence.addtwotone does not)
         phase11+=(freq1*phasetime*np.pi*2)%(2*np.pi)
@@ -577,8 +693,8 @@ class Sequence():
         playWave(1,marker(Num,1)+WAVE1,2,marker(Num,1)+WAVE2,3,marker(Num,1)+WAVE3,4,marker(Num,1)+WAVE4,Fact);""")
 
         #Replacing the correct placeholders to output in the correct channels.
-        OUT1="+add(Amp1*sine(Num,Phase11,Per1),Amp2*sine(Num,Phase21,Per2))"
-        OUT2="+add(Amp1*sine(Num,Phase12,Per1),Amp2*sine(Num,Phase22,Per2))"
+        OUT1="+add(Amp11*sine(Num,Phase11,Per1),Amp21*sine(Num,Phase21,Per2))"
+        OUT2="+add(Amp12*sine(Num,Phase12,Per1),Amp22*sine(Num,Phase22,Per2))"
         if CHAN1==1:
             SEQ=SEQ.replace("WAVE1","WAVE1"+OUT1)
         elif CHAN1==2:
@@ -603,13 +719,15 @@ class Sequence():
         #Ensures the markers are inserted into the correct channels, and placeholders are erased accordingly
         for i in range(4):
             if Mark[i]==0:
-                awg_program=awg_program.replace(str(i+1)+",marker(LEN1,1),","")
-                awg_program=awg_program.replace(str(i+1)+",marker(Num,1)+",str(i+1)+",")
+                SEQ=SEQ.replace(str(i+1)+",marker(LEN1,1),","")
+                SEQ=SEQ.replace(str(i+1)+",marker(Num,1)+",str(i+1)+",")
 
         #replaces the placeholders with the correct values.
         SEQ=SEQ.replace("Num", str(round(N,5)))
-        SEQ=SEQ.replace("Amp1", str(amp1))
-        SEQ=SEQ.replace("Amp2", str(amp2))
+        SEQ=SEQ.replace("Amp11", str(amp11))
+        SEQ=SEQ.replace("Amp12", str(amp12))
+        SEQ=SEQ.replace("Amp21", str(amp21))
+        SEQ=SEQ.replace("Amp22", str(amp22))
         SEQ=SEQ.replace("Per1", str(per1))
         SEQ=SEQ.replace("Per2", str(per2))
         SEQ=SEQ.replace("Fact", str(factor))
